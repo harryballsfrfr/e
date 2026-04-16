@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Three.js Horror: The Copper Lung</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        /* -- UI: Objective Tracker (Top Right) -- */
+        #objective-tracker {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            text-align: right;
+            color: #a3ff9e;
+            text-shadow: 0 0 8px rgba(163, 255, 158, 0.6);
+            pointer-events: none;
+            z-index: 10;
+        }
+        .step { opacity: 0.4; font-size: 14px; margin-bottom: 8px; transition: opacity 0.3s; }
+        .active-step { opacity: 1; font-size: 18px; font-weight: bold; }
+        
+        /* -- UI: Mobile Joystick Container -- */
+        #joystick-zone {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            width: 150px;
+            height: 150px;
+            display: none; /* Hidden by default, activated if touch detected */
+            z-index: 10;
+        }
+
+        /* -- UI: PC Start Screen -- */
+        #blocker {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); color: white; display: flex; 
+            justify-content: center; align-items: center; text-align: center; cursor: pointer; z-index: 20;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="objective-tracker">
+        <div class="step active-step" id="step1">[ ] Find the rusty corridor</div>
+        <div class="step" id="step2">[ ] Restore the generator</div>
+        <div class="step" id="step3">[ ] Don't look back</div>
+    </div>
+
+    <div id="joystick-zone"></div>
+    <div id="blocker"><h2 id="start-text">Click to Start<br><span style="font-size:16px;">(W/A/S/D to move, Mouse to look)</span></h2></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
+
+    <script>
+        // 1. SCENE SETUP & HORROR ATMOSPHERE
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x020202);
+        scene.fog = new THREE.FogExp2(0x020202, 0.08); // Thick, dark fog limits visibility
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.y = 1.6; // Average player height
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // 2. LIGHTING (Flashlight effect)
+        const ambientLight = new THREE.AmbientLight(0x101010); // Barely visible ambient
+        scene.add(ambientLight);
+
+        const flashLight = new THREE.SpotLight(0xfff5e6, 1.5, 20, Math.PI / 6, 0.5, 1);
+        flashLight.position.set(0, 0, 0);
+        flashLight.target.position.set(0, 0, -1);
+        flashLight.castShadow = true;
+        camera.add(flashLight);
+        camera.add(flashLight.target);
+        scene.add(camera);
+
+        // 3. ENVIRONMENT (Building a creepy hallway)
+        const textureLoader = new THREE.TextureLoader();
+        // Creates a basic grid to simulate tiles
+        const floorGeo = new THREE.PlaneGeometry(50, 50);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Add some random pillars to hide things behind
+        const boxGeo = new THREE.BoxGeometry(2, 4, 2);
+        const boxMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        for(let i=0; i<10; i++) {
+            const box = new THREE.Mesh(boxGeo, boxMat);
+            box.position.set((Math.random() - 0.5) * 20, 2, (Math.random() - 0.5) * 20);
+            box.castShadow = true;
+            box.receiveShadow = true;
+            scene.add(box);
+        }
+
+        // 4. DEVICE DETECTION & CONTROLS
+        const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        
+        let controls;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let moveJoystick = { x: 0, y: 0 };
+        
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        const clock = new THREE.Clock();
+
+        if (isTouch) {
+            // -- MOBILE SETUP --
+            document.getElementById('blocker').style.display = 'none'; // Hide PC start screen
+            document.getElementById('joystick-zone').style.display = 'block'; // Show Joystick
+            
+            // Init Nipple.js Virtual Joystick
+            const joystick = nipplejs.create({
+                zone: document.getElementById('joystick-zone'),
+                mode: 'static',
+                position: { left: '50%', top: '50%' },
+                color: 'white'
+            });
+
+            joystick.on('move', (evt, data) => {
+                const angle = data.angle.radian;
+                const force = Math.min(data.force, 1);
+                // Translate joystick angle to X/Y movement
+                moveJoystick.x = Math.cos(angle) * force;
+                moveJoystick.y = Math.sin(angle) * force;
+            });
+
+            joystick.on('end', () => { moveJoystick = { x: 0, y: 0 }; });
+
+            // Basic touch dragging to rotate camera (Look around)
+            let isDragging = false;
+            let previousTouch = { x: 0, y: 0 };
+            window.addEventListener('touchstart', (e) => {
+                if(e.touches[0].clientX > window.innerWidth / 2) { // Only look if touching right side of screen
+                    isDragging = true;
+                    previousTouch.x = e.touches[0].clientX;
+                    previousTouch.y = e.touches[0].clientY;
+                }
+            });
+            window.addEventListener('touchmove', (e) => {
+                if (isDragging) {
+                    const deltaX = e.touches[0].clientX - previousTouch.x;
+                    const deltaY = e.touches[0].clientY - previousTouch.y;
+                    // Rotate camera based on swipe
+                    camera.rotation.y -= deltaX * 0.005;
+                    camera.rotation.x -= deltaY * 0.005;
+                    camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x)); // clamp up/down
+                    
+                    previousTouch.x = e.touches[0].clientX;
+                    previousTouch.y = e.touches[0].clientY;
+                }
+            });
+            window.addEventListener('touchend', () => { isDragging = false; });
+
+        } else {
+            // -- PC SETUP --
+            controls = new THREE.PointerLockControls(camera, document.body);
+            const blocker = document.getElementById('blocker');
+
+            blocker.addEventListener('click', () => { controls.lock(); });
+            controls.addEventListener('lock', () => { blocker.style.display = 'none'; });
+            controls.addEventListener('unlock', () => { blocker.style.display = 'flex'; });
+
+            // Keyboard Listeners
+            const onKeyDown = (event) => {
+                switch (event.code) {
+                    case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                    case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                    case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                    case 'ArrowRight': case 'KeyD': moveRight = true; break;
+                }
+            };
+            const onKeyUp = (event) => {
+                switch (event.code) {
+                    case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                    case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                    case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                    case 'ArrowRight': case 'KeyD': moveRight = false; break;
+                }
+            };
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+        }
+
+        // 5. OBJECTIVE TRACKER LOGIC
+        let currentStep = 1;
+        // Call this function when a player triggers an event in your game
+        function advanceObjective() {
+            const oldStep = document.getElementById('step' + currentStep);
+            if (oldStep) {
+                oldStep.classList.remove('active-step');
+                oldStep.innerText = oldStep.innerText.replace('[ ]', '[X]'); // Mark checked
+            }
+            currentStep++;
+            const newStep = document.getElementById('step' + currentStep);
+            if (newStep) newStep.classList.add('active-step');
+        }
+
+        // 6. ANIMATION LOOP
+        const speed = 20.0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            if (!isTouch && controls && controls.isLocked) {
+                // PC Movement
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
+
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+            } else if (isTouch) {
+                // Mobile Movement (Translating Joystick to Camera Vector)
+                const moveVector = new THREE.Vector3(moveJoystick.x, 0, -moveJoystick.y);
+                moveVector.applyQuaternion(camera.quaternion); // Move relative to where camera is facing
+                moveVector.y = 0; // Keep movement horizontal
+                
+                camera.position.addScaledVector(moveVector, speed * 0.2 * delta);
+            }
+
+            // Flicker flashlight slightly for horror effect
+            if(Math.random() > 0.95) {
+                flashLight.intensity = 1.5 + (Math.random() * 0.5 - 0.25);
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle Window Resizing
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
